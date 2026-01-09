@@ -13,6 +13,8 @@
 # Default intermediate artifacts directory is in ~/.cache/nanochat
 export OMP_NUM_THREADS=1
 export NANOCHAT_BASE_DIR="$VSC_SCRATCH/data/fineweb-english" # "$HOME/.cache/nanochat"
+# Move into working directory (bound)
+cd /opt/nanochat
 # mkdir -p $NANOCHAT_BASE_DIR
 
 # -----------------------------------------------------------------------------
@@ -59,9 +61,9 @@ python -m nanochat.report reset
 # python -m nanochat.dataset -n 240 &
 # DATASET_DOWNLOAD_PID=$!
 # train the tokenizer with vocab size 2**16 = 65536 on ~2B characters of data
-python -m scripts.tok_train --max_chars=2000000000
+#python -m scripts.tok_train --max_chars=2000000000
 # evaluate the tokenizer (report compression ratio etc.)
-python -m scripts.tok_eval
+#python -m scripts.tok_eval
 
 # -----------------------------------------------------------------------------
 # Base model (pretraining)
@@ -90,18 +92,18 @@ torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.base_eval
 
 # download 2.3MB of synthetic identity conversations to impart a personality to nanochat
 # see dev/gen_synthetic_data.py for details on how this data was prepared and to get a sense of how you can easily tune it
-curl -L -o $NANOCHAT_BASE_DIR/identity_conversations.jsonl https://karpathy-public.s3.us-west-2.amazonaws.com/identity_conversations.jsonl
+# curl -L -o $NANOCHAT_BASE_DIR/identity_conversations.jsonl https://karpathy-public.s3.us-west-2.amazonaws.com/identity_conversations.jsonl
 
 # run midtraining and eval the model
-torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.mid_train -- --run=$WANDB_RUN
-torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.chat_eval -- -i mid
+# torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.mid_train -- --run=$WANDB_RUN
+# torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.chat_eval -- -i mid
 
 # -----------------------------------------------------------------------------
 # Supervised Finetuning (domain adaptation to each sequence all by itself per row)
 
 # train sft and re-eval right away (should see a small bump)
-torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.chat_sft -- --run=$WANDB_RUN
-torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.chat_eval -- -i sft
+# torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.chat_sft -- --run=$WANDB_RUN
+# torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.chat_eval -- -i sft
 
 # chat with the model over CLI! Leave out the -p to chat interactively
 # python -m scripts.chat_cli -p "Why is the sky blue?"

@@ -20,7 +20,7 @@ import pyarrow.parquet as pq
 parser = argparse.ArgumentParser(description='Train a BPE tokenizer')
 parser.add_argument('--max_chars', type=int, default=10_000_000_000, help='Maximum characters to train on (default: 10B)')
 parser.add_argument('--doc_cap', type=int, default=10_000, help='Maximum characters per document (default: 10,000)')
-parser.add_argument('--vocab_size', type=int, default=65536, help='Vocabulary size (default: 65536 = 2^16)')
+parser.add_argument('--vocab_size', type=int, default=32768, help='Vocabulary size (default: 65536 = 2^16)')
 
 parser.add_argument('--directories', type=str, nargs='+', default=None, help='List of directories containing training data')
 parser.add_argument('--tokenizer_dir', type=str, default=None, help='Directory to save the trained tokenizer')
@@ -211,7 +211,7 @@ for token_id in range(vocab_size):
         id_bytes = len(token_str.encode("utf-8")) # number of bytes that make up this token
         token_bytes.append(id_bytes)
 token_bytes = torch.tensor(token_bytes, dtype=torch.int32, device='cpu')
-token_bytes_path = os.path.join(args.tokenizer_dir, "token_bytes.pt")
+token_bytes_path = os.path.join(tokenizer_dir, "token_bytes.pt")
 with open(token_bytes_path, "wb") as f:
     torch.save(token_bytes, f)
 print(f"Saved token_bytes to {token_bytes_path}")
