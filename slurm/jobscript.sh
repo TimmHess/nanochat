@@ -12,7 +12,6 @@
 #SBATCH --error=%x_%j.err
 
 
-# 2. Define Variables
 # Adjust these paths to match your actual folder structure
 SIF_IMAGE="$VSC_SCRATCH/apptainers/nanochat_V2.sif"
 # DATA_SOURCE="$VSC_DATA/nanochat/dataset"
@@ -21,16 +20,10 @@ SIF_IMAGE="$VSC_SCRATCH/apptainers/nanochat_V2.sif"
 echo "Starting job on node $SLURMD_NODENAME"
 echo "GPUs allocated: $SLURM_GPUS_ON_NODE"
 
-# 4. Run Apptainer
-# --nv: Enable NVIDIA GPU support inside container
-# --bind: Explicitly map VSC storage locations. 
-# We bind the scratch destination to a fixed path inside if needed, or just keep it same.
+# move into right directory
+cd $VSC_SCRATCH/workspacePython/nanochat
+
 echo "Running Apptainer..."
-
 apptainer run --nv --bind $VSC_SCRATCH/workspacePython/nanochat:/opt/nanochat --bind $VSC_SCRATCH --env NANOCHAT_BASE_DIR="$VSC_SCRATCH/data/fineweb-english/" "$SIF_IMAGE" bash /opt/nanochat/run_560M.sh
-
-# 5. Cleanup (Optional but polite)
-# echo "Cleaning up scratch..."
-# rm -rf "$DATA_DEST"
 
 echo "Job finished."
