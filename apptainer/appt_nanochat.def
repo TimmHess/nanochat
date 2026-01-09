@@ -1,0 +1,83 @@
+Bootstrap: docker
+From: nvidia/cuda:12.8.0-devel-ubuntu24.04
+
+# -----------------------------------------------------------------------------
+# FILES: Copy current directory into the container
+# -----------------------------------------------------------------------------
+%files
+    . /opt/nanochat
+
+# -----------------------------------------------------------------------------
+# ENVIRONMENT: Runtime variables
+# -----------------------------------------------------------------------------
+%environment
+    # Prepend our venv to PATH so 'python' automatically runs the venv version
+    export PATH="/opt/venv/bin:$PATH"
+    
+    # UV Configuration for runtime (if you need to add packages later)
+    export UV_PROJECT_ENVIRONMENT="/opt/venv"
+    
+    # Nanochat defaults
+    export OMP_NUM_THREADS=1
+    export NANOCHAT_BASE_DIR="$HOME/.cache/nanochat"
+
+# -----------------------------------------------------------------------------
+# POST: Installation Steps
+# -----------------------------------------------------------------------------
+%post
+    # 1. Install System Dependencies
+    # We include 'build-essential' and 'ninja-build' because 'uv sync' might 
+    # need to compile CUDA extensions (like flash-attention) from source.
+    apt-get update && apt-get install -y --no-install-recommends \
+        curl \
+        ca-certificates \
+        git \
+        build-essential \
+        ninja-build \
+        python3-dev
+    
+    rm -rf /var/lib/apt/lists/*
+
+    # 2. Install uv
+    # We install it to a global location
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="/root/.local/bin:$PATH"
+
+    # 3. Setup Project & Dependencies
+    cd /opt/nanochat
+
+    # Tell uv to create the venv at a specific global location
+    export UV_PROJECT_ENVIRONMENT="/opt/venv"
+    # Optimization: Copy files instead of symlinking for container robustness
+    export UV_LINK_MODE=copy 
+    
+    echo "Creating virtual environment..."
+    uv venv
+    
+    echo "Syncing dependencies..."
+    # This reads pyproject.toml and installs everything (including GPU deps)
+    uv sync --extra gpu
+
+    # 4. Cleanup & Permissions
+    # Important: Grant read/execute permissions to all users (for HPC use)
+    chmod -R 755 /opt/venv
+    chmod -R 755 /opt/nanochat
+
+
+%runscript
+    # 2. Handle WandB default
+    if [ -z "$WANDB_RUN" ]; then
+        export WANDB_RUN=dummy
+        # We don't echo here to keep output clean for piped commands, 
+        # unless you want to debug.
+    fi
+
+    # 3. Flexible Execution
+    if [ $# -eq 0 ]; then
+        # If no arguments provided, just start a shell
+        echo "Starting Nanochat Container Shell..."
+        exec /bin/bash
+    else
+        # Execute the passed command
+        exec "$@"
+    fi

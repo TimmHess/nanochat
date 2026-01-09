@@ -1,0 +1,232 @@
+"""
+Train a tokenizer using our own BPE Tokenizer library.
+In the style of GPT-4 tokenizer.
+"""
+import os
+import time
+import argparse
+import torch
+from nanochat.tokenizer import RustBPETokenizer
+from nanochat.common import get_base_dir
+from nanochat.dataset import parquets_iter_batched
+
+from collections import deque
+import itertools
+import pyarrow.parquet as pq
+
+# -----------------------------------------------------------------------------
+# Parse command line arguments
+
+parser = argparse.ArgumentParser(description='Train a BPE tokenizer')
+parser.add_argument('--max_chars', type=int, default=10_000_000_000, help='Maximum characters to train on (default: 10B)')
+parser.add_argument('--doc_cap', type=int, default=10_000, help='Maximum characters per document (default: 10,000)')
+parser.add_argument('--vocab_size', type=int, default=65536, help='Vocabulary size (default: 65536 = 2^16)')
+
+parser.add_argument('--directories', type=str, nargs='+', default=None, help='List of directories containing training data')
+parser.add_argument('--tokenizer_dir', type=str, default=None, help='Directory to save the trained tokenizer')
+
+args = parser.parse_args()
+print(f"max_chars: {args.max_chars:,}")
+print(f"doc_cap: {args.doc_cap:,}")
+print(f"vocab_size: {args.vocab_size:,}")
+
+# -----------------------------------------------------------------------------
+# Mixed text iterator
+
+# Define this helper function inside tok_train.py
+def custom_parquets_iter(split, data_dir):
+    # Re-implementing logic since dataset.py doesn't allow custom paths
+    files = sorted([
+        f for f in os.listdir(data_dir) 
+        if f.endswith('.parquet') and not f.endswith('.tmp')
+    ])
+    paths = [os.path.join(data_dir, f) for f in files]
+    
+    # Train/Val split logic
+    paths = paths[:-1] if split == "train" else paths[-1:]
+    
+    for filepath in paths:
+        pf = pq.ParquetFile(filepath)
+        for rg_idx in range(pf.num_row_groups):
+            rg = pf.read_row_group(rg_idx)
+            texts = rg.column('text').to_pylist()
+            yield texts
+
+
+# Document-level interleaving
+def text_iterator():
+    """
+    Maintains buffers to handle the fact that parquet iterators yield large batches.
+    """
+    # 1. Initialize streams
+    sources = []
+    if args.directories:
+        print(f"Loading data from: {args.directories}")
+        for d in args.directories:
+            sources.append({
+                'stream': custom_parquets_iter(split="train", data_dir=d),
+                'buffer': deque(), # Use a deque for efficient FIFO popping
+                'name': os.path.basename(d) # Just for debugging
+            })
+    else:
+        print("Loading default data.")
+        sources.append({
+            'stream': parquets_iter_batched(split="train"),
+            'buffer': deque(),
+            'name': 'default'
+        })
+
+    nchars = 0
+    
+    # 2. Round-Robin Loop
+    # Continue as long as we have active streams
+    while sources:
+        # Iterate over a copy so we can remove exhausted sources safely
+        for source in list(sources):
+            
+            # A. Refill Buffer if empty
+            if not source['buffer']:
+                try:
+                    # Fetch next large batch (e.g. 10k docs)
+                    batch = next(source['stream'])
+                    source['buffer'].extend(batch)
+                except StopIteration:
+                    # Stream is empty, remove from rotation
+                    sources.remove(source)
+                    continue
+
+            # B. Yield ONE document from the buffer
+            if source['buffer']:
+                doc_text = source['buffer'].popleft() # Take from the front
+                
+                # Crop document cap
+                if len(doc_text) > args.doc_cap:
+                    doc_text = doc_text[:args.doc_cap]
+                
+                nchars += len(doc_text)
+                yield doc_text
+                
+                # Check global limit
+                if nchars > args.max_chars:
+                    return
+
+    if nchars < args.max_chars:
+        print(f"Warning: Ran out of data at {nchars:,} chars (requested {args.max_chars:,})")
+
+
+text_iter = text_iterator()
+
+# Batch level interleaving (old version)
+# def text_iterator():
+#     if args.directories:
+#         # Use our custom function here
+#         streams = [custom_parquets_iter(split="train", data_dir=d) for d in args.directories]
+#         print("num streams:", len(streams))
+#     else:
+#         # Fallback to the original library function
+#         streams = [parquets_iter_batched(split="train")]
+
+#     nchars = 0
+#     while streams:
+#         counter = 0
+#         for stream in list(streams):
+#             try:
+#                 batch = next(stream)
+#                 print(counter)
+#                 counter += 1
+#             except StopIteration:
+#                 print("removing stream")
+#                 streams.remove(stream)
+#                 continue
+
+#             for doc in batch:
+#                 doc_text = doc
+#                 if len(doc_text) > args.doc_cap:
+#                     doc_text = doc_text[:args.doc_cap]
+#                 nchars += len(doc_text)
+#                 yield doc_text
+#                 if nchars > args.max_chars:
+#                     return
+
+# def text_iterator():
+#     """
+#     1) Flatten the batches into a single iterator
+#     2) Crop every document to args.doc_cap characters
+#     3) Break when we've seen args.max_chars characters
+#     """
+#     nchars = 0
+#     for batch in parquets_iter_batched(split="train"):
+#         for doc in batch:
+#             doc_text = doc
+#             if len(doc_text) > args.doc_cap:
+#                 doc_text = doc_text[:args.doc_cap]
+#             nchars += len(doc_text)
+#             yield doc_text
+#             if nchars > args.max_chars:
+#                 return
+# text_iter = text_iterator()
+
+
+
+# -----------------------------------------------------------------------------
+# Train the tokenizer
+t0 = time.time()
+tokenizer = RustBPETokenizer.train_from_iterator(text_iter, args.vocab_size)
+t1 = time.time()
+train_time = t1 - t0
+print(f"Training time: {train_time:.2f}s")
+
+# -----------------------------------------------------------------------------
+# Save the tokenizer to disk
+#base_dir = get_base_dir()
+tokenizer_dir = os.path.join(args.tokenizer_dir, "tokenizer")
+tokenizer.save(tokenizer_dir)
+
+# -----------------------------------------------------------------------------
+# Quick inline sanity check
+test_text = """Hello world! This is a test.
+Numbers: 123, 4567, 89
+Contractions: I'm, you're, it's
+Special chars: @#$%^&*()
+Unicode: 你好世界 🌍"""
+encoded = tokenizer.encode(test_text)
+decoded = tokenizer.decode(encoded)
+assert decoded == test_text
+print("Sanity check passed!")
+
+# -----------------------------------------------------------------------------
+# One more thing: we wish to cache a mapping from token id to number of bytes of that token
+# for efficient evaluation of bits per byte. Unlike the typical mean loss, this
+# allows us to report a loss that is invariant to the vocab size of the tokenizer.
+# The bits per byte on the validation set is then one of the primary metrics we care about.
+vocab_size = tokenizer.get_vocab_size()
+special_set = set(tokenizer.get_special_tokens())
+token_strings = [tokenizer.decode([token_id]) for token_id in range(vocab_size)]
+token_bytes = []
+for token_id in range(vocab_size):
+    token_str = token_strings[token_id] # the Python string representation of this token
+    if token_str in special_set:
+        token_bytes.append(0) # special characters are not counted
+    else:
+        id_bytes = len(token_str.encode("utf-8")) # number of bytes that make up this token
+        token_bytes.append(id_bytes)
+token_bytes = torch.tensor(token_bytes, dtype=torch.int32, device='cpu')
+token_bytes_path = os.path.join(args.tokenizer_dir, "token_bytes.pt")
+with open(token_bytes_path, "wb") as f:
+    torch.save(token_bytes, f)
+print(f"Saved token_bytes to {token_bytes_path}")
+
+# Log to report
+from nanochat.report import get_report
+token_bytes_nonzero = (token_bytes[token_bytes > 0]).to(dtype=torch.float32)
+get_report().log(section="Tokenizer training", data=[
+    vars(args), # argparse command line arguments
+    {"train_time": train_time},
+    {"num_special_tokens": len(special_set)},
+    {
+        "token_bytes_min": int(token_bytes_nonzero.min().item()),
+        "token_bytes_max": int(token_bytes_nonzero.max().item()),
+        "token_bytes_mean": token_bytes_nonzero.mean().item(),
+        "token_bytes_std": token_bytes_nonzero.std().item(),
+    }
+])
